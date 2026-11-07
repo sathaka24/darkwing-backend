@@ -1,3 +1,255 @@
-from django.db import models
+from decimal import Decimal
+
+from django.conf import settings
+from django.db import models, transaction
+from django.db.models import Sum
+from django.utils import timezone
 
 # Create your models here.
+
+# ---------------------------------------------------------------------------
+# Gap-free numbering
+# ---------------------------------------------------------------------------
+class InvoiceCounter(models.Model):
+    
+    # One row per year holding the last invoice number issued. Numbers are
+    # handed out inside a transaction with the row locked (select_for_update),
+    # so two concurrent issues can neither collide nor skip a number.
+
+    # Schema rule #05: numbering must be sequential and gap-free.
+    
+
+    year = models.PositiveIntegerField(primary_key=True)
+    last_no = models.PositiveIntegerField(default=0)
+
+    # setting the table name
+    class Meta:
+        db_table = "invoice_counter"
+
+    # for printing. defining the printing format
+    def __str__(self):
+        return f"{self.year} → {self.last_no}"
+
+
+    SERIES = ("H", "E")
+
+    # Here @classmethod means the method automatically receives the class itself as its first argument, named cls
+    @classmethod
+    def next_number(cls, series, year=None):
+        series = series.upper()
+        if series not in cls.SERIES:
+            raise ValueError(f"series must be one of {cls.SERIES}, got {series!r}")
+        year = year or timezone.localdate().year
+
+        # below line locks the rows so other threads can't update the table. get_or_create() func check whether any raw is in the table for given year
+        # if raws exsists for given year it return a tuple which contain all the raws in that year. if there is no any raw it return with last_no = 0
+        counter, _ = cls.objects.select_for_update().get_or_create(year=year)
+
+        counter.last_no += 1
+        counter.save(update_fields=["last_no"])
+        return f"DWM{year}{series}{counter.last_no:04d}"
+
+
+# ---------------------------------------------------------------------------
+# Invoice header
+# ---------------------------------------------------------------------------
+class Invoice(models.Model):
+    
+    # The invoice header. Totals and the invoice number are computed server-side
+    # and frozen once the invoice is issued — the record is never recomputed on
+    # read. Corrections are a new invoice or a cancellation, never an edit.
+    
+    # TextChoices is Django’s way of defining a fixed set of allowed string values
+
+    class Status(models.TextChoices):
+        ISSUED = "ISSUED", "Issued"
+        PARTIALLY_PAID = "PARTIALLY_PAID", "Partially paid"
+        PAID = "PAID", "Paid"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    class Warranty(models.TextChoices):
+        NONE = "NONE", "None"
+        THREE_MONTHS = "THREE_MONTHS", "3 months"
+        SIX_MONTHS = "SIX_MONTHS", "6 months"
+
+    invoice_number = models.CharField(
+        max_length=20, unique=True, db_index=True, editable=False
+    )
+
+    # here we define the foreign keys
+    customer = models.ForeignKey(
+        "customers.Customer",
+        on_delete=models.PROTECT,      # never delete a customer out from under an invoice
+        related_name="invoices",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="invoices_created",
+    )
+
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.ISSUED,
+        db_index=True,
+    )
+
+    issue_date = models.DateField(default=timezone.localdate)
+    warranty_stamp = models.CharField(
+        max_length=16, choices=Warranty.choices, default=Warranty.NONE
+    )
+
+    # Frozen at issue: Σ of line totals. Never recomputed on read.
+    grand_total = models.DecimalField(max_digits=12, decimal_places=2)
+
+    notes = models.TextField(blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "invoice"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["status"]),
+            models.Index(fields=["issue_date"]),
+        ]
+
+    def __str__(self):
+        return self.invoice_number
+
+
+    # every row in invoice table is like instances of Invoice class right. when on anywhere we get a row it is a class of Invoice. 
+    # when we call like balance_due every time it get grand total and reduce amount_paid and give us the values instead of recording everything
+    
+    @property
+    def amount_paid(self):
+        total = self.payments.aggregate(s=Sum("amount"))["s"]
+        return total or Decimal("0.00")
+
+    @property
+    def advance_paid(self):
+        total = self.payments.filter(kind=Payment.Kind.ADVANCE).aggregate(
+            s=Sum("amount")
+        )["s"]
+        return total or Decimal("0.00")
+
+    @property
+    def balance_due(self):
+        return self.grand_total - self.amount_paid
+
+    @property
+    def show_paid_stamp(self):
+        return self.status == self.Status.PAID
+
+    @property
+    def paid_date(self):
+        """Timestamp of the balance payment that cleared the invoice."""
+        last_balance = (
+            self.payments.filter(kind=Payment.Kind.BALANCE)
+            .order_by("-paid_at")
+            .first()
+        )
+        return last_balance.paid_at if last_balance else None
+
+    @property
+    def show_warranty_stamp(self):
+        return self.warranty_stamp != self.Warranty.NONE
+
+    @property
+    def show_term_4(self):
+        """Terms & Conditions rule #4 prints when any item carries warranty."""
+        return self.items.filter(has_warranty=True).exists()
+
+
+# ---------------------------------------------------------------------------
+# Line items
+# ---------------------------------------------------------------------------
+class InvoiceItem(models.Model):
+    
+    # One row per item on an invoice. Discount is applied item-wise. Rows are
+    # frozen together with their invoice and cascade-delete with it.
+    
+
+    invoice = models.ForeignKey(
+        Invoice, on_delete=models.CASCADE, related_name="items"
+    )
+
+    position = models.PositiveIntegerField(default=0)  # keeps PDF ordering
+    description = models.CharField(max_length=255)
+    model = models.CharField(max_length=100, blank=True)
+    part_number = models.CharField(max_length=100, blank=True)
+    brand = models.CharField(max_length=100, blank=True)
+
+    quantity = models.DecimalField(max_digits=12, decimal_places=4)
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2)
+    discount_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("0.00")
+    )
+    has_warranty = models.BooleanField(default=False)
+
+    # Frozen at issue: (qty * unit_price) - discount.
+    line_total = models.DecimalField(max_digits=12, decimal_places=2)
+
+    class Meta:
+        db_table = "invoice_item"
+        ordering = ["invoice", "position"]
+        indexes = [
+            models.Index(fields=["invoice"]),
+        ]
+
+    def __str__(self):
+        return f"{self.invoice_id} · {self.description}"
+
+    def compute_line_total(self):
+        """
+        Helper the create path uses before freezing. Not called on read —
+        line_total is the stored, frozen source of truth once issued.
+        """
+        gross = self.quantity * self.unit_price
+        discount = gross * (self.discount_percent / Decimal("100"))
+        return (gross - discount).quantize(Decimal("0.01"))
+
+
+# ---------------------------------------------------------------------------
+# Payments (append-only)
+# ---------------------------------------------------------------------------
+class Payment(models.Model):
+    
+    # One row per money event. An advance and a balance are two rows, each with
+    # its own timestamp. Recording a payment appends a row and flips the
+    # invoice status — the invoice body itself is never mutated.
+    
+
+    class Kind(models.TextChoices):
+        ADVANCE = "ADVANCE", "Advance"
+        BALANCE = "BALANCE", "Balance"
+
+    invoice = models.ForeignKey(
+        Invoice, on_delete=models.CASCADE, related_name="payments"
+    )
+    kind = models.CharField(max_length=10, choices=Kind.choices)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    paid_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="payments_recorded",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "payment"
+        ordering = ["paid_at"]
+        indexes = [
+            models.Index(fields=["invoice"]),
+            models.Index(fields=["paid_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.invoice_id} · {self.kind} · {self.amount}"

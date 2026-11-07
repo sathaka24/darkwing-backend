@@ -119,11 +119,11 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+USE_TZ = True                 # store everything in UTC internally
+TIME_ZONE = "Asia/Colombo"    # but interpret "local" dates/times as Colombo # TODO:
 
 USE_I18N = True
 
-USE_TZ = True
 
 
 # Static files (CSS, JavaScript, Images)
