@@ -347,7 +347,7 @@ class InvoiceMarkPaidView(View):
 
         return JsonResponse(invoice_to_dict(invoice, full=True))
 
-
+@method_decorator(csrf_exempt, name='dispatch')
 class InvoiceCancelView(View):
 
     # POST /api/invoices/<int:pk>/cancel/
