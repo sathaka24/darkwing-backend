@@ -5,7 +5,12 @@ from django.contrib.auth import authenticate
 from .tokens import generate_access_token, generate_refresh_token, decode_token
 from django.contrib.auth.models import User
 
+# To disable the CRFS token checking. cuz we proviod our own token 
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
 
+
+@method_decorator(csrf_exempt, name='dispatch')
 class LoginView(View):
 
     # POST /api/auth/login/
@@ -59,6 +64,7 @@ class LoginView(View):
             }
         })
 
+@method_decorator(csrf_exempt, name='dispatch')
 class RefreshView(View):
     
     # POST /api/auth/refresh/

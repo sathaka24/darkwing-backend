@@ -10,6 +10,10 @@ from django.utils import timezone
 from .models import Invoice, InvoiceItem, Payment, InvoiceCounter
 from customers.models import Customer
 
+# To disable the CRFS token checking. cuz we proviod our own token 
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
+
 
 # ---------------------------------------------------------------------------
 # helper — turn one Invoice (with its items, payments, computed flags)
@@ -87,6 +91,7 @@ def to_decimal(value, field_name):
         raise ValueError(f'{field_name} is not a valid number')
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class InvoiceListCreateView(View):
 
     # GET  /api/invoices/?status=&search=
@@ -241,6 +246,7 @@ class InvoiceDetailView(View):
         return JsonResponse(invoice_to_dict(invoice, full=True))
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class PaymentCreateView(View):
 
     # POST /api/invoices/<int:pk>/payments/
@@ -295,6 +301,7 @@ class PaymentCreateView(View):
         return JsonResponse(invoice_to_dict(invoice, full=True), status=201)
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class InvoiceMarkPaidView(View):
 
     # POST /api/invoices/<int:pk>/mark-paid/

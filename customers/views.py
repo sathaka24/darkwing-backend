@@ -4,6 +4,10 @@ from django.views import View
 from django.db.models import Q
 from .models import Customer
 
+# To disable the CRFS token checking. cuz we proviod our own token 
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
+
 
 # small helper so list and detail return the same shape
 def customer_to_dict(customer):
@@ -18,7 +22,7 @@ def customer_to_dict(customer):
         'updated_at': customer.updated_at.isoformat(),
     }
 
-
+@method_decorator(csrf_exempt, name='dispatch')
 class CustomerListCreateView(View):
 
     # GET  /api/customers/?search=
@@ -106,6 +110,7 @@ class CustomerListCreateView(View):
         return JsonResponse(customer_to_dict(customer), status=201)
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class CustomerDetailView(View):
 
     # GET   /api/customers/<int:pk>/
