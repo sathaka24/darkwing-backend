@@ -43,6 +43,9 @@ INSTALLED_APPS = [
     'customers',
     'invoices',
     'dashboard'
+
+    #avoid CORS
+    'corsheaders'
 ]
 
 MIDDLEWARE = [
@@ -56,6 +59,10 @@ MIDDLEWARE = [
 
     #our JWT middleware is here 
     'users.authentication.JWTAuthenticationMiddleware'
+
+    # for CORS
+    'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.common.CommonMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -140,3 +147,8 @@ MAILERS = {
         'BACKEND': 'django.core.mail.backends.console.EmailBackend',
     },
 }
+
+# Django's VIP Guest List (CORS)
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173", # Telling the browser that React is allowed!
+]
