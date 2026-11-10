@@ -5,6 +5,9 @@ from django.db import models, transaction
 from django.db.models import Sum
 from django.utils import timezone
 
+import hashlib, json
+from django.db import transaction
+
 # Create your models here.
 
 # ---------------------------------------------------------------------------
@@ -58,8 +61,10 @@ class Invoice(models.Model):
     # The invoice header. Totals and the invoice number are computed server-side
     # and frozen once the invoice is issued — the record is never recomputed on
     # read. Corrections are a new invoice or a cancellation, never an edit.
-    
-    # TextChoices is Django’s way of defining a fixed set of allowed string values
+
+    # It also snapshots the parts of the printed document that live in global
+    # config — terms & conditions, bank details — and who signed it, so an old
+    # invoice always reprints exactly as issued even if those later change.
 
     class Status(models.TextChoices):
         ISSUED = "ISSUED", "Issued"
@@ -88,6 +93,26 @@ class Invoice(models.Model):
         related_name="invoices_created",
     )
 
+    # Who signed/approved the issued document, chosen on the frontend. NULL is
+    # a real, stored state — it means the invoice was issued *unsigned* (blank
+    # signature line), not that data is missing. Distinct from created_by,
+    # which is who built the record.
+    signed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="invoices_signed",
+    )
+
+    # The signer's signature as printed, snapshotted per invoice (a base64
+    # data URL, e.g. "data:image/png;base64,..."). Stored on the row rather
+    # than referenced from the user so that (a) changing a user's signature
+    # never alters past invoices, and (b) it survives a host's ephemeral
+    # filesystem (e.g. Railway), unlike a media file. Blank = issued unsigned,
+    # matching signed_by = NULL.
+    signature_image = models.TextField(blank=True)
+
     status = models.CharField(
         max_length=16,
         choices=Status.choices,
@@ -100,8 +125,23 @@ class Invoice(models.Model):
         max_length=16, choices=Warranty.choices, default=Warranty.NONE
     )
 
+    company_config = models.ForeignKey(
+    'CompanyConfig', on_delete=models.PROTECT, related_name='invoices',
+    )
+
     # Frozen at issue: Σ of line totals. Never recomputed on read.
     grand_total = models.DecimalField(max_digits=12, decimal_places=2)
+
+    # --- Frozen document snapshot ---------------------------------------
+    # Copied from the live data at issue so the invoice reprints exactly as
+    # issued, even if the customer, company contact, terms or bank details
+    # change later. The frontend document engine renders straight from these.
+    #
+    # Customer identity as printed on the "INVOICE FOR" line. The `customer`
+    # FK is kept for linking/filtering, but the PDF uses these frozen copies:
+    customer_name = models.CharField(max_length=150, blank=True)
+    customer_mobile = models.CharField(max_length=20, blank=True)
+
 
     notes = models.TextField(blank=True)
     cancelled_at = models.DateTimeField(null=True, blank=True)
@@ -212,6 +252,59 @@ class InvoiceItem(models.Model):
         discount = gross * (self.discount_percent / Decimal("100"))
         return (gross - discount).quantize(Decimal("0.01"))
 
+
+class CompanyConfig(models.Model):
+
+    # One row per DISTINCT set of company details. Re-entering the same
+    # details reuses the row; only changed details create a new one.
+    # Rows are never edited, so invoices can safely point at them.
+
+    company_email = models.EmailField(max_length=254, blank=True)
+    company_phone = models.CharField(max_length=20, blank=True)
+    terms_and_conditions = models.JSONField(default=list)
+    bank_details = models.JSONField(default=dict)
+
+    content_hash = models.CharField(max_length=64, unique=True, editable=False)
+    is_current = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    @staticmethod
+    def _hash(company_email, company_phone, terms_and_conditions, bank_details):
+        blob = json.dumps(
+            {'e': company_email, 'p': company_phone,
+             't': terms_and_conditions, 'b': bank_details},
+            sort_keys=True, separators=(',', ':'),
+        )
+        return hashlib.sha256(blob.encode()).hexdigest()
+
+    @classmethod
+    def current(cls):
+        return cls.objects.filter(is_current=True).first()
+
+    @classmethod
+    def get_or_publish(cls, *, company_email, company_phone,
+                       terms_and_conditions, bank_details):
+        h = cls._hash(company_email, company_phone, terms_and_conditions, bank_details)
+        with transaction.atomic():
+            version = cls.objects.filter(content_hash=h).first()
+            if version is None:
+                version = cls.objects.create(
+                    company_email=company_email,
+                    company_phone=company_phone,
+                    terms_and_conditions=terms_and_conditions,
+                    bank_details=bank_details,
+                    content_hash=h,
+                )
+            cls.objects.exclude(pk=version.pk).filter(is_current=True).update(is_current=False)
+            if not version.is_current:
+                version.is_current = True
+                version.save(update_fields=['is_current'])
+            return version
+
+        
 
 # ---------------------------------------------------------------------------
 # Payments (append-only)

@@ -6,5 +6,6 @@ urlpatterns = [
     path('<int:pk>/',               views.InvoiceDetailView.as_view(),     name='invoice_detail'),      
     path('<int:pk>/payments/',      views.PaymentCreateView.as_view(),     name='invoice_payment'),     
     path('<int:pk>/mark-paid/',     views.InvoiceMarkPaidView.as_view(),   name='invoice_mark_paid'),   
-    path('<int:pk>/cancel/',        views.InvoiceCancelView.as_view(),     name='invoice_cancel'),      
+    path('<int:pk>/cancel/',        views.InvoiceCancelView.as_view(),     name='invoice_cancel'),   
+    path('company-config/',         views.CompanyConfigView.as_view(),     name="company_details"),   
 ]

@@ -7,7 +7,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from .models import Invoice, InvoiceItem, Payment, InvoiceCounter
+from .models import Invoice, InvoiceItem, Payment, InvoiceCounter, CompanyConfig
 from customers.models import Customer
 
 # To disable the CRFS token checking. cuz we proviod our own token 
@@ -78,6 +78,18 @@ def invoice_to_dict(invoice, full=False):
         data['show_warranty_stamp'] = invoice.show_warranty_stamp
         data['show_term_4'] = invoice.show_term_4
 
+        cfg = invoice.company_config
+        data['company'] = {
+            'email': cfg.company_email,
+            'phone': cfg.company_phone,
+            'terms_and_conditions': cfg.terms_and_conditions,
+            'bank_details': cfg.bank_details,
+        }
+        data['customer_snapshot'] = {
+            'name': invoice.customer_name,
+            'mobile': invoice.customer_mobile,
+        }
+
     return data
 
 
@@ -107,7 +119,7 @@ class InvoiceListCreateView(View):
         status = request.GET.get('status', '')
         search = request.GET.get('search', '')
 
-        invoices = Invoice.objects.select_related('customer', 'created_by')
+        invoices = Invoice.objects.select_related('customer', 'created_by', 'company_config')
 
         if status:
             invoices = invoices.filter(status=status)
@@ -156,6 +168,9 @@ class InvoiceListCreateView(View):
         except Customer.DoesNotExist:
             return JsonResponse({'error': 'Customer not found'}, status=404)
 
+        config = CompanyConfig.current()
+        if config is None:
+            return JsonResponse({'error': 'Company config not set up'}, status=400)
         # ---- everything below runs atomically ----
         # if anything raises, the whole invoice (and its number) rolls back,
         # so the counter never leaves a gap.
@@ -165,17 +180,23 @@ class InvoiceListCreateView(View):
                 # ask the counter for the next gap-free number (locks the row)
                 year = timezone.localdate().year
                 number = InvoiceCounter.next_number(series, year)
-
+                
                 # create the header first with a placeholder total of 0;
                 # we fill grand_total once the items are summed.
+
                 invoice = Invoice.objects.create(
                     invoice_number=number,
                     customer=customer,
-                    created_by=request.user,          # the action-tracking stamp
+                    created_by=request.user,
                     status=Invoice.Status.ISSUED,
                     warranty_stamp=data.get('warranty_stamp', 'NONE'),
                     notes=data.get('notes', ''),
                     grand_total=Decimal('0.00'),
+                    company_config=config,                        # ← pointer only
+                    customer_name=customer.name,
+                    customer_mobile=customer.mobile,
+                    signed_by_id=data.get('signed_by'),
+                    signature_image=data.get('signature_image', ''),
                 )
 
                 # build each line item, let the model freeze its line_total,
@@ -380,3 +401,35 @@ class InvoiceCancelView(View):
         invoice.save()
 
         return JsonResponse(invoice_to_dict(invoice, full=True))
+
+@method_decorator(csrf_exempt, name='dispatch')
+class CompanyConfigView(View):
+
+    # GET  /api/company-config/   → the current config
+    # POST /api/company-config/   → publish new details (dedups automatically)
+
+    def get(self, request):
+        cfg = CompanyConfig.current()
+        if cfg is None:
+            return JsonResponse({'error': 'Company config not set up'}, status=404)
+        return JsonResponse({
+            'id': cfg.id,
+            'company_email': cfg.company_email,
+            'company_phone': cfg.company_phone,
+            'terms_and_conditions': cfg.terms_and_conditions,
+            'bank_details': cfg.bank_details,
+        })
+
+    def post(self, request):
+        try:
+            data = json.loads(request.body)
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON'}, status=400)
+
+        cfg = CompanyConfig.get_or_publish(
+            company_email=data.get('company_email', ''),
+            company_phone=data.get('company_phone', ''),
+            terms_and_conditions=data.get('terms_and_conditions', []),
+            bank_details=data.get('bank_details', {}),
+        )
+        return JsonResponse({'id': cfg.id, 'is_current': cfg.is_current}, status=200)

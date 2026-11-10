@@ -42,7 +42,7 @@ INSTALLED_APPS = [
     'users',
     'customers',
     'invoices',
-    'dashboard'
+    'dashboard',
 
     #avoid CORS
     'corsheaders'
@@ -57,12 +57,13 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 
-    #our JWT middleware is here 
-    'users.authentication.JWTAuthenticationMiddleware'
-
     # for CORS
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
+
+    #our JWT middleware is here 
+    'users.authentication.JWTAuthenticationMiddleware',
+
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -94,7 +95,7 @@ DATABASES = {
 
         'NAME': 'darkwing_db',
         'USER': 'darkwing_dev',
-        'PASSWORD': 'sathaka++',
+        'PASSWORD': 'sathaka+++',
 
         'HOST': 'localhost',
         'PORT': '5432'
