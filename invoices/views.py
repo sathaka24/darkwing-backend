@@ -89,6 +89,12 @@ def invoice_to_dict(invoice, full=False):
             'name': invoice.customer_name,
             'mobile': invoice.customer_mobile,
         }
+        data['signed_by'] = (
+        invoice.signed_by.get_full_name() or invoice.signed_by.username
+        if invoice.signed_by else None
+        )
+
+        data['signature_image'] = invoice.signature_image or None 
 
     return data
 
@@ -102,6 +108,42 @@ def to_decimal(value, field_name):
     except (InvalidOperation, TypeError, ValueError):
         raise ValueError(f'{field_name} is not a valid number')
 
+# ---------------------------------------------------------------------------
+# small helper — read + check the optional signature on a new invoice.
+# Returns (signed_by_id, signature_image). Unsigned → (None, '').
+# Raises ValueError (→ 400) or PermissionError (→ 403) on bad input.
+# ---------------------------------------------------------------------------
+MAX_SIGNATURE_LENGTH = 300_000          # ~220 KB image; real ones are ~50-70 KB
+SIGNATURE_PREFIX = 'data:image/png;base64,'
+
+
+def read_signature(data, user):
+    signed_by = data.get('signed_by')
+    image = data.get('signature_image') or ''
+
+    # nothing sent → a real, stored "unsigned" invoice
+    if not signed_by and not image:
+        return None, ''
+
+    # one without the other makes no sense
+    if not signed_by or not image:
+        raise ValueError('signed_by and signature_image must be sent together')
+
+    # you can only sign as yourself
+    try:
+        signed_by = int(signed_by)
+    except (TypeError, ValueError):
+        raise ValueError('signed_by must be a user id')
+    if signed_by != user.id:
+        raise PermissionError('You can only sign invoices as yourself')
+
+    # must be a PNG data URL of a sane size
+    if not image.startswith(SIGNATURE_PREFIX):
+        raise ValueError('signature_image must be a PNG data URL')
+    if len(image) > MAX_SIGNATURE_LENGTH:
+        raise ValueError('signature_image is too large')
+
+    return signed_by, image
 
 @method_decorator(csrf_exempt, name='dispatch')
 class InvoiceListCreateView(View):
@@ -171,6 +213,14 @@ class InvoiceListCreateView(View):
         config = CompanyConfig.current()
         if config is None:
             return JsonResponse({'error': 'Company config not set up'}, status=400)
+
+        # check the optional signature before touching the database
+        try:
+            signed_by_id, signature_image = read_signature(data, request.user)
+        except PermissionError as e:
+            return JsonResponse({'error': str(e)}, status=403)
+        except ValueError as e:
+            return JsonResponse({'error': str(e)}, status=400)
         # ---- everything below runs atomically ----
         # if anything raises, the whole invoice (and its number) rolls back,
         # so the counter never leaves a gap.
@@ -195,8 +245,8 @@ class InvoiceListCreateView(View):
                     company_config=config,                        # ← pointer only
                     customer_name=customer.name,
                     customer_mobile=customer.mobile,
-                    signed_by_id=data.get('signed_by'),
-                    signature_image=data.get('signature_image', ''),
+                    signed_by_id=signed_by_id,
+                    signature_image=signature_image,
                 )
 
                 # build each line item, let the model freeze its line_total,
@@ -260,7 +310,7 @@ class InvoiceDetailView(View):
 
     def get(self, request, pk):
         try:
-            invoice = Invoice.objects.select_related('customer', 'created_by').get(id=pk)
+            invoice = Invoice.objects.select_related('customer', 'created_by', 'signed_by', 'company_config').get(id=pk)
         except Invoice.DoesNotExist:
             return JsonResponse({'error': 'Invoice not found'}, status=404)
 
