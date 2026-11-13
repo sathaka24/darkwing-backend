@@ -30,6 +30,7 @@ def invoice_to_dict(invoice, full=False):
             'customer_code': invoice.customer.customer_code,
             'name': invoice.customer.name,
             'mobile': invoice.customer.mobile,
+            'email': invoice.customer.email,
         },
         'created_by': invoice.created_by.get_full_name() or invoice.created_by.username,
         'status': invoice.status,
@@ -57,7 +58,7 @@ def invoice_to_dict(invoice, full=False):
                 'quantity': str(item.quantity),
                 'unit_price': str(item.unit_price),
                 'discount_percent': str(item.discount_percent),
-                'has_warranty': item.has_warranty,
+                'warranty': item.warranty,
                 'line_total': str(item.line_total),
             }
             for item in invoice.items.all().order_by('position')
@@ -264,7 +265,7 @@ class InvoiceListCreateView(View):
                         quantity=to_decimal(raw.get('quantity', 0), 'quantity'),
                         unit_price=to_decimal(raw.get('unit_price', 0), 'unit_price'),
                         discount_percent=to_decimal(raw.get('discount_percent', 0), 'discount_percent'),
-                        has_warranty=raw.get('has_warranty', False),
+                        warranty=raw.get('warranty', 'NONE'),
                     )
                     item.line_total = item.compute_line_total()   # freeze it
                     item.save()

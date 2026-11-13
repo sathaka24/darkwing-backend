@@ -73,9 +73,25 @@ class Invoice(models.Model):
         CANCELLED = "CANCELLED", "Cancelled"
 
     class Warranty(models.TextChoices):
+        # 1–12 months → the 12 warranty stamps. CHECKING = warranty lasts only
+        # until the part is fixed and verified working. APPROVED = invoice-level
+        # roll-up for an invoice whose items carry different warranties (used on
+        # the invoice stamp only — never on a single item).
         NONE = "NONE", "None"
+        ONE_MONTH = "ONE_MONTH", "1 month"
+        TWO_MONTHS = "TWO_MONTHS", "2 months"
         THREE_MONTHS = "THREE_MONTHS", "3 months"
+        FOUR_MONTHS = "FOUR_MONTHS", "4 months"
+        FIVE_MONTHS = "FIVE_MONTHS", "5 months"
         SIX_MONTHS = "SIX_MONTHS", "6 months"
+        SEVEN_MONTHS = "SEVEN_MONTHS", "7 months"
+        EIGHT_MONTHS = "EIGHT_MONTHS", "8 months"
+        NINE_MONTHS = "NINE_MONTHS", "9 months"
+        TEN_MONTHS = "TEN_MONTHS", "10 months"
+        ELEVEN_MONTHS = "ELEVEN_MONTHS", "11 months"
+        TWELVE_MONTHS = "TWELVE_MONTHS", "12 months"
+        CHECKING = "CHECKING", "Checking"
+        APPROVED = "APPROVED", "Approved"
 
     invoice_number = models.CharField(
         max_length=20, unique=True, db_index=True, editable=False
@@ -228,7 +244,13 @@ class InvoiceItem(models.Model):
     discount_percent = models.DecimalField(
         max_digits=5, decimal_places=2, default=Decimal("0.00")
     )
-    has_warranty = models.BooleanField(default=False)
+    # has_warranty = models.BooleanField(default=False)
+
+    warranty = models.CharField(
+        max_length=16,
+        choices=Invoice.Warranty.choices,   # same full list as the invoice
+        default=Invoice.Warranty.NONE,
+    )
 
     # Frozen at issue: (qty * unit_price) - discount.
     line_total = models.DecimalField(max_digits=12, decimal_places=2)
