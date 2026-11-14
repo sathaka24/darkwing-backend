@@ -25,7 +25,7 @@ SECRET_KEY = 'django-insecure-_8ie^y@0a!(sr=2r_w7j5!)#246hm9#fnu&yr5_9n8&q%+yjp=
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["localhost", "127.0.0.1", ".ngrok-free.app", ".ngrok-free.dev", ".ngrok.app"]
 
 
 # Application definition
@@ -153,3 +153,5 @@ MAILERS = {
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173", # Telling the browser that React is allowed!
 ]
+
+CSRF_TRUSTED_ORIGINS = ["https://*.ngrok-free.app", "https://*.ngrok-free.dev", "https://*.ngrok.app"]

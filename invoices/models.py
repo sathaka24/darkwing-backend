@@ -165,6 +165,9 @@ class Invoice(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # models.py — Invoice
+    has_seal = models.BooleanField(default=True)   # False = issued without the company seal
+
     class Meta:
         db_table = "invoice"
         ordering = ["-created_at"]
@@ -307,22 +310,37 @@ class CompanyConfig(models.Model):
         return cls.objects.filter(is_current=True).first()
 
     @classmethod
-    def get_or_publish(cls, *, company_email, company_phone,terms_and_conditions, bank_details):
+    def get_or_publish(cls, *, company_email, company_phone, terms_and_conditions,
+                    bank_details, make_current=True):
+        
+        # Return the version holding exactly these details, creating it if needed.
+
+        # make_current=True  → Settings / POST company-config: this becomes the
+        #                     default every NEW invoice uses (the old current is unset).
+        # make_current=False → Create Invoice with edited terms/bank: the version is
+        #                     stored (or reused) for that one invoice only; the
+        #                     company default is left untouched.
+        
         h = cls._hash(company_email, company_phone, terms_and_conditions, bank_details)
         with transaction.atomic():
-            version = cls.objects.filter(content_hash=h).first()
-            if version is None:
-                version = cls.objects.create(
-                    company_email=company_email,
-                    company_phone=company_phone,
-                    terms_and_conditions=terms_and_conditions,
-                    bank_details=bank_details,
-                    content_hash=h,
-                )
-            cls.objects.exclude(pk=version.pk).filter(is_current=True).update(is_current=False)
-            if not version.is_current:
-                version.is_current = True
-                version.save(update_fields=['is_current'])
+            # Same content → same hash → reuse the existing row (immutable, de-duped).
+            version, _created = cls.objects.get_or_create(
+                content_hash=h,
+                defaults={
+                    "company_email": company_email,
+                    "company_phone": company_phone,
+                    "terms_and_conditions": terms_and_conditions,
+                    "bank_details": bank_details,
+                    "is_current": False,   # a new row is never current by accident
+                },
+            )
+
+            if make_current:
+                cls.objects.exclude(pk=version.pk).filter(is_current=True).update(is_current=False)
+                if not version.is_current:
+                    version.is_current = True
+                    version.save(update_fields=["is_current"])
+
             return version
 
         

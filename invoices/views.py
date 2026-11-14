@@ -41,6 +41,8 @@ def invoice_to_dict(invoice, full=False):
         # live @property values, computed from the frozen rows + payments
         'amount_paid': str(invoice.amount_paid),
         'balance_due': str(invoice.balance_due),
+        # invoice_to_dict
+        'has_seal': invoice.has_seal,
     }
 
     # the detail view needs the whole picture; the list view stays lean
@@ -153,6 +155,23 @@ def read_signature(data, user):
 
     return signed_by, image
 
+def read_company_override(data):
+    raw = data.get('company')
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError('company must be an object')
+    terms = raw.get('terms_and_conditions', [])
+    if not isinstance(terms, list) or not all(isinstance(t, str) and t.strip() for t in terms):
+        raise ValueError('terms_and_conditions must be a list of non-empty strings')
+    bank = raw.get('bank_details', {})
+    if not isinstance(bank, dict):
+        raise ValueError('bank_details must be an object')
+    return {
+        'terms_and_conditions': [t.strip() for t in terms],
+        'bank_details': {k: str(bank.get(k, '')).strip() for k in ('name', 'account_no', 'bank', 'branch')},
+    }
+
 @method_decorator(csrf_exempt, name='dispatch')
 class InvoiceListCreateView(View):
 
@@ -232,6 +251,17 @@ class InvoiceListCreateView(View):
         # ---- everything below runs atomically ----
         # if anything raises, the whole invoice (and its number) rolls back,
         # so the counter never leaves a gap.
+
+        # create view, after read_signature(...)
+        has_seal = data.get('has_seal', True) is not False
+        if not has_seal:
+            signed_by_id, signature_image = None, ''
+        # …and pass has_seal=has_seal to Invoice.objects.create(...)
+        try:
+            override = read_company_override(data)
+        except ValueError as e:
+            return JsonResponse({'error': str(e)}, status=400)
+        
         try:
             with transaction.atomic():
 
@@ -241,6 +271,15 @@ class InvoiceListCreateView(View):
                 
                 # create the header first with a placeholder total of 0;
                 # we fill grand_total once the items are summed.
+
+                if override:
+                    config = CompanyConfig.get_or_publish(
+                        company_email=config.company_email,     # contact stays the company's
+                        company_phone=config.company_phone,
+                        terms_and_conditions=override['terms_and_conditions'],
+                        bank_details=override['bank_details'],
+                        make_current=False,                     # this invoice only
+                    )
 
                 invoice = Invoice.objects.create(
                     invoice_number=number,
