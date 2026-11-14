@@ -14,6 +14,7 @@ class JWTAuthenticationMiddleware:
     PUBLIC_URLS = [
         '/api/auth/login/',
         '/api/auth/refresh/',
+        '/api/auth/2fa/verify/',
         '/admin/'
     ]
 

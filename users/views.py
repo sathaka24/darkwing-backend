@@ -8,6 +8,25 @@ from django.contrib.auth.models import User
 # To disable the CRFS token checking. cuz we proviod our own token 
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
+from twofactor.services import user_has_2fa, create_challenge
+
+
+# NEW: the old success response, moved out of LoginView so the
+# 2FA verify view (twofactor/views.py) can call it too.
+def issue_tokens_response(user):
+    access_token = generate_access_token(user)
+    refresh_token = generate_refresh_token(user)
+
+    return JsonResponse({
+        'access': access_token,
+        'refresh': refresh_token,
+        'user': {
+            'id': user.id,
+            'username': user.username,
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+        }
+    })
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -16,7 +35,9 @@ class LoginView(View):
     # POST /api/auth/login/
     # Body: {"username": "name ", "password": "pass"}
 
-    # Returns access + refresh tokens if credentials are correct.
+    # If the user has 2FA on -> returns {mfa_required, mfa_token}
+    #   (frontend then calls POST /api/auth/2fa/verify/ with the 6-digit code)
+    # If not -> returns access + refresh tokens like before.
 
     def post(self, request):
         
@@ -48,21 +69,16 @@ class LoginView(View):
                 status=401
             )
 
-        # here generate the access tokens and refresh tokens
-        access_token = generate_access_token(user)
-        refresh_token = generate_refresh_token(user)
+        # NEW: password is correct — if 2FA is on, ask for the code first
+        if user_has_2fa(user):
+            return JsonResponse({
+                'mfa_required': True,
+                'mfa_token': create_challenge(user),
+            })
 
-        
-        return JsonResponse({
-            'access': access_token,
-            'refresh': refresh_token,
-            'user': {
-                'id': user.id,
-                'username': user.username,
-                'first_name': user.first_name,
-                'last_name': user.last_name,
-            }
-        })
+        # No 2FA set up yet -> log in straight away, same as before
+        return issue_tokens_response(user)
+
 
 @method_decorator(csrf_exempt, name='dispatch')
 class RefreshView(View):
