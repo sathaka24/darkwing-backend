@@ -66,11 +66,18 @@ def invoice_to_dict(invoice, full=False):
 
         data['payments'] = [
             {
+                'id': p.id,
                 'kind': p.kind,
                 'amount': str(p.amount),
                 'paid_at': p.paid_at.isoformat(),
+                'recorded_by': (
+                    (p.recorded_by.get_full_name() or p.recorded_by.username)
+                    if p.recorded_by else None
+                ),
             }
-            for p in invoice.payments.all().order_by('paid_at')
+            # select_related: fetch the users in the SAME query,
+            # instead of one extra query per payment
+            for p in invoice.payments.select_related('recorded_by').order_by('paid_at')
         ]
 
         # the flags the PDF engine renders on
@@ -279,6 +286,14 @@ class InvoiceListCreateView(View):
                 if advance:
                     amount = to_decimal(advance.get('amount', 0), 'advance amount')
 
+                    if amount < 0:
+                        raise ValueError('advance amount cannot be negative')
+                    if amount > grand_total:
+                        raise ValueError(
+                            f'Advance (LKR {amount:,.2f}) is more than the '
+                            f'invoice total (LKR {grand_total:,.2f})'
+                        )
+
                     if amount > 0:
                         Payment.objects.create(
                             invoice=invoice,
@@ -326,17 +341,13 @@ class PaymentCreateView(View):
     # Append ONE payment row (advance or balance) with its own
     # timestamp. The invoice body is never touched — money is rows,
     # not fields. Recomputes status from the running balance.
+    #
+    # The invoice row is LOCKED while we check the balance and insert,
+    # so two users paying the same invoice at once can't overpay it:
+    # the second request waits, then sees the new balance.
 
     def post(self, request, pk):
-        try:
-            invoice = Invoice.objects.get(id=pk)
-        except Invoice.DoesNotExist:
-            return JsonResponse({'error': 'Invoice not found'}, status=404)
-
-        # can't collect money on a cancelled invoice
-        if invoice.status == Invoice.Status.CANCELLED:
-            return JsonResponse({'error': 'Invoice is cancelled'}, status=400)
-
+        # ---- 1. validate the body first (no database work yet) ----
         try:
             data = json.loads(request.body)
         except json.JSONDecodeError:
@@ -354,7 +365,28 @@ class PaymentCreateView(View):
         if amount <= 0:
             return JsonResponse({'error': 'amount must be greater than zero'}, status=400)
 
+        # ---- 2. lock, check, write: all in one transaction ----
         with transaction.atomic():
+            try:
+                # select_for_update = row lock until this block ends
+                invoice = Invoice.objects.select_for_update().get(id=pk)
+            except Invoice.DoesNotExist:
+                return JsonResponse({'error': 'Invoice not found'}, status=404)
+
+            # can't collect money on a cancelled invoice
+            if invoice.status == Invoice.Status.CANCELLED:
+                return JsonResponse({'error': 'Invoice is cancelled'}, status=400)
+
+            due = invoice.balance_due          # fresh, read under the lock
+            if due <= 0:
+                return JsonResponse({'error': 'Invoice is already fully paid'}, status=400)
+
+            if amount > due:
+                return JsonResponse(
+                    {'error': f'Amount is more than the balance due (LKR {due:,.2f})'},
+                    status=400,
+                )
+
             Payment.objects.create(
                 invoice=invoice,
                 kind=kind,
@@ -372,7 +404,6 @@ class PaymentCreateView(View):
 
         return JsonResponse(invoice_to_dict(invoice, full=True), status=201)
 
-
 @method_decorator(csrf_exempt, name='dispatch')
 class InvoiceMarkPaidView(View):
 
@@ -384,16 +415,6 @@ class InvoiceMarkPaidView(View):
     # Body: none (or {paid_at})
 
     def post(self, request, pk):
-        try:
-            invoice = Invoice.objects.get(id=pk)
-        except Invoice.DoesNotExist:
-            return JsonResponse({'error': 'Invoice not found'}, status=404)
-
-        if invoice.status == Invoice.Status.CANCELLED:
-            return JsonResponse({'error': 'Invoice is cancelled'}, status=400)
-
-        if invoice.status == Invoice.Status.PAID:
-            return JsonResponse({'error': 'Invoice is already paid'}, status=400)
 
         # body is optional here — allow a backdated paid_at if sent
         try:
@@ -401,9 +422,22 @@ class InvoiceMarkPaidView(View):
         except json.JSONDecodeError:
             return JsonResponse({'error': 'Invalid JSON'}, status=400)
 
-        remaining = invoice.balance_due
-
         with transaction.atomic():
+            try:
+                # lock the row: a second click (or the other user) waits here,
+                # then sees status PAID and gets a clean 400
+                invoice = Invoice.objects.select_for_update().get(id=pk)
+            except Invoice.DoesNotExist:
+                return JsonResponse({'error': 'Invoice not found'}, status=404)
+
+            if invoice.status == Invoice.Status.CANCELLED:
+                return JsonResponse({'error': 'Invoice is cancelled'}, status=400)
+
+            if invoice.status == Invoice.Status.PAID:
+                return JsonResponse({'error': 'Invoice is already paid'}, status=400)
+
+            remaining = invoice.balance_due      # read UNDER the lock
+
             # only write a row if there's actually something left to clear
             if remaining > 0:
                 Payment.objects.create(
@@ -429,10 +463,11 @@ class InvoiceCancelView(View):
     # Body: none (or {reason})
 
     def post(self, request, pk):
-        try:
-            invoice = Invoice.objects.get(id=pk)
-        except Invoice.DoesNotExist:
-            return JsonResponse({'error': 'Invoice not found'}, status=404)
+        with transaction.atomic():
+            try:
+                invoice = Invoice.objects.select_for_update().get(id=pk)
+            except Invoice.DoesNotExist:
+                return JsonResponse({'error': 'Invoice not found'}, status=404)
 
         if invoice.status == Invoice.Status.CANCELLED:
             return JsonResponse({'error': 'Invoice is already cancelled'}, status=400)

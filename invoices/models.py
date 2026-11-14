@@ -217,7 +217,7 @@ class Invoice(models.Model):
     @property
     def show_term_4(self):
         """Terms & Conditions rule #4 prints when any item carries warranty."""
-        return self.items.filter(has_warranty=True).exists()
+        return self.items.exclude(warranty=self.Warranty.NONE).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -307,8 +307,7 @@ class CompanyConfig(models.Model):
         return cls.objects.filter(is_current=True).first()
 
     @classmethod
-    def get_or_publish(cls, *, company_email, company_phone,
-                       terms_and_conditions, bank_details):
+    def get_or_publish(cls, *, company_email, company_phone,terms_and_conditions, bank_details):
         h = cls._hash(company_email, company_phone, terms_and_conditions, bank_details)
         with transaction.atomic():
             version = cls.objects.filter(content_hash=h).first()
