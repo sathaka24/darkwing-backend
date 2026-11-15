@@ -39,7 +39,7 @@ ALLOWED_HOSTS = ["localhost", "127.0.0.1", ".ngrok-free.app", ".ngrok-free.dev",
 
 if os.environ.get("RAILWAY_PUBLIC_DOMAIN"):
 
-    ALLOWED_HOSTS.append(os.environ("RAILWAY_PUBLIC_DOMAIN"))
+    ALLOWED_HOSTS.append(os.environ["RAILWAY_PUBLIC_DOMAIN"])
 
 
 # Application definition
