@@ -16,3 +16,30 @@ docs/
 test/
 
 .env
+
+# --- Secrets: never commit ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Python / virtualenv ---
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# --- Django ---
+staticfiles/
+media/
+db.sqlite3
+*.log
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -12,21 +12,34 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 
 from pathlib import Path
 import os
+import dj_database_url
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+load_dotenv(BASE_DIR / ".env")
+
+def env_list(name, default=""):
+    """'a,b,c' -> ['a', 'b', 'c'] (blank items dropped)."""
+    return [item.strip() for item in os.environ.get(name, default).split(",") if item.strip()]
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-_8ie^y@0a!(sr=2r_w7j5!)#246hm9#fnu&yr5_9n8&q%+yjp='
+
+SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]
+
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get("DEBUG", "False").lower() == "true"
 
 ALLOWED_HOSTS = ["localhost", "127.0.0.1", ".ngrok-free.app", ".ngrok-free.dev", ".ngrok.app"]
+
+if os.environ.get("RAILWAY_PUBLIC_DOMAIN"):
+
+    ALLOWED_HOSTS.append(os.environ("RAILWAY_PUBLIC_DOMAIN"))
 
 
 # Application definition
@@ -54,6 +67,9 @@ TOTP_ENCRYPTION_KEY = os.environ["TOTP_ENCRYPTION_KEY"]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
+    # for CORS
+    'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -61,9 +77,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 
-    # for CORS
-    'corsheaders.middleware.CorsMiddleware',
-    'django.middleware.common.CommonMiddleware',
+    
 
     #our JWT middleware is here 
     'users.authentication.JWTAuthenticationMiddleware',
@@ -94,16 +108,11 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-
-        'NAME': 'darkwing_db',
-        'USER': 'darkwing_dev',
-        'PASSWORD': 'sathaka+++',
-
-        'HOST': 'localhost',
-        'PORT': '5432'
-    }
+    'default': dj_database_url.config(
+        env="DATABASE_URL",
+        conn_max_age=600,
+        conn_health_checks=True
+    )
 }
 
 
@@ -142,6 +151,12 @@ USE_I18N = True
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+}
 
 
 # Email
@@ -154,8 +169,19 @@ MAILERS = {
 }
 
 # Django's VIP Guest List (CORS)
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173", # Telling the browser that React is allowed!
-]
+CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS", "http://localhost:5173")
 
-CSRF_TRUSTED_ORIGINS = ["https://*.ngrok-free.app", "https://*.ngrok-free.dev", "https://*.ngrok.app"]
+CSRF_TRUSTED_ORIGINS = env_list(
+    "CSRF_TRUSTED_ORIGINS",
+    "https://*.ngrok-free.app,https://*.ngrok-free.dev,https://*.ngrok.app",
+)
+if os.environ.get("RAILWAY_PUBLIC_DOMAIN"):
+    CSRF_TRUSTED_ORIGINS.append(f"https://{os.environ['RAILWAY_PUBLIC_DOMAIN']}")
+
+# Production hardening (only when DEBUG is off)
+if not DEBUG:
+    # Railway terminates HTTPS at its proxy and forwards plain HTTP
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
